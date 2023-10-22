@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sockets</title>
+</head>
+<body>
+    <h1 id="socket-id"></h1>
+    <ul></ul>
+    <input />
+    <button id="send-btn">send</button>
+
+    <button id="create-group-btn">create group</button>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        let id = null
+        document.querySelector("#send-btn").addEventListener("click", () => {
+            if(!id)
+                return;
+
+            const text = document.querySelector("input").value;
+            socket.emit("message", {sender: id, content: text})
+        })
+
+        document.querySelector("#create-btn").addEventListener("click", () => {
+            if(!id)
+                return;
+
+            const text = document.querySelector("input").value;
+            socket.emit("message", {sender: id, content: text})
+        })
+
+        const socket = io();
+        socket.on("connect", () => {
+            console.log("connected as client")
+        })
+
+        socket.on("system_message", (_id) => {
+            console.log(_id)
+            id = _id
+
+            document.querySelector("#socket-id").innerHTML = _id;
+        })
+
+        socket.on("message", (text) => {
+            const el = document.createElement('li')
+            el.innerHTML = text
+            document.querySelector("ul").appendChild(el);
+        })
+    </script>
+</body>
+</html>
