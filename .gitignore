@@ -1,3 +1,6 @@
+# ignore .env because for some reason .env.local does not work
+.env
+
 # Logs
 logs
 *.log

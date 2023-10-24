@@ -1,7 +1,31 @@
+import "dotenv/config";
 import express from "express";
 import SocketIo from "socket.io";
 import { createServer } from "http";
 import { Server } from "socket.io";
+import { OpenAI } from "openai";
+import * as availableTopics from "./topics.json";
+
+// Array shuffle function from the npm package
+// a quick hack because node js wasn't having it, strange error about not supporting require() of ES Module
+function arrayShuffle(array: any) {
+    if (!Array.isArray(array)) {
+        throw new TypeError(`Expected an array, got ${typeof array}`);
+    }
+
+    array = [...array];
+
+    for (let index = array.length - 1; index > 0; index--) {
+        const newIndex = Math.floor(Math.random() * (index + 1));
+        [array[index], array[newIndex]] = [array[newIndex], array[index]];
+    }
+
+    return array;
+}
+
+const openai = new OpenAI({
+    apiKey: process.env.OPEN_API_KEY,
+});
 
 const app = express();
 
@@ -39,11 +63,21 @@ app.use(cors());
 interface GameState {
     currentTurnID: string;
     topics: string[];
+    imageURIs: string[];
+}
+
+interface GameStateUser {
+    topics: string[];
+    prompts: string[];
+    imageURIsFromPrompts: string[];
+    topicPlace: number;
+    promptPlace: number;
 }
 
 interface ActiveRoomUser {
     userID: string;
     socket: any;
+    gameState: GameStateUser;
 }
 
 interface ActiveRoom {
@@ -52,11 +86,13 @@ interface ActiveRoom {
     settings: RoomSettings;
     creator: string;
     gameState: GameState;
+    availableTopics: string[];
 }
 
 interface RoomSettings {
     maxPlayer?: number;
     gameType?: string;
+    selectedTopics: string[];
 }
 
 interface Room {
@@ -77,7 +113,10 @@ app.post("/api/rooms/create", (req, res) => {
     temp_rooms.push({
         roomID: id,
         creator: req.body.userID,
-        settings: { maxPlayer: req.body.roomSettings.maxPlayer },
+        settings: {
+            maxPlayer: req.body.roomSettings.maxPlayer,
+            selectedTopics: req.body.roomSettings.selectedTopics,
+        },
     });
 
     res.send(req.body);
@@ -92,6 +131,10 @@ app.get("/api/rooms/:userID", (req, res) => {
     });
 
     res.send(JSON.stringify(userRoomsIDs));
+});
+
+app.get("/api/topics", (req, res) => {
+    res.send(JSON.stringify(availableTopics.topicNames));
 });
 
 console.log("SERVER -- SERVER");
@@ -221,10 +264,37 @@ function addUserToGroup(socket: SocketIo.Socket) {
             creator: storedGroup.creator,
             users: [{ userID: socket.handshake.query.userID, socket: socket }],
             settings: storedGroup.settings,
-            gameState: { currentTurnID: storedGroup.creator, topics: [] },
+            gameState: {
+                currentTurnID: storedGroup.creator,
+                topics: [],
+                imageURIs: [],
+            },
+            availableTopics: getCombinedTopicList(
+                storedGroup.settings.selectedTopics
+            ),
         });
         updateActiveGroupUsersChanged(socket);
     }
+}
+
+// TODO : better way would be to add a available topics array to the Active Group, in randomised order
+// then just pick from the start of the array
+// could trim the array to length of rounds, and or leave more for skipping
+function getCombinedTopicList(topicGroups: string[]): string[] {
+    let topicGroupData: string[][] = [];
+
+    topicGroups.forEach((topic) => {
+        switch (topic) {
+            case "cartoons":
+                topicGroupData.push(availableTopics.cartoons);
+                break;
+            case "shows":
+                topicGroupData.push(availableTopics.shows);
+                break;
+        }
+    });
+
+    return arrayShuffle(topicGroupData.flat());
 }
 
 var active_rooms: ActiveRoom[] = [];
@@ -262,7 +332,20 @@ io.on("connect", (socket) => {
         }
 
         // initial topic
-        group.gameState.topics.push("Shrek");
+        if (group.availableTopics == undefined) {
+            return;
+        }
+
+        // TODO : need this in all times the next topic is selected
+        let nextTopic = group.availableTopics.shift();
+        if (nextTopic == undefined) {
+            console.log(
+                "ERROR: Cant select the next topic because there are no topics left in the available topics array."
+            );
+            return;
+        }
+
+        group.gameState.topics.push(nextTopic);
 
         group.users.forEach((user) => {
             user.socket.emit("game_start", group!.gameState);
@@ -271,8 +354,7 @@ io.on("connect", (socket) => {
 
     socket.on("submit_prompt", (message) => {
         // TODO : should probably check if the person can submit just in case i.e if their turn
-
-        // do AI stuff etc.
+        // TODO : check the user provided prompt just incase, for example length.
 
         let group = active_rooms.find(
             (element) => element.groupID == socket.handshake.query.groupID
@@ -285,33 +367,61 @@ io.on("connect", (socket) => {
             return;
         }
 
+        group?.gameState.imageURIs.push(
+            "https://oaidalleapiprodscus.blob.core.windows.net/private/org-hztZ1B11qCqo2MUoKWShZ6U4/user-kICOmr4NZ4ku7BLM7W9xoS5W/img-XFUKqK6aoYq32XrjTwApyGTG.png?st=2023-10-23T21%3A58%3A04Z&se=2023-10-23T23%3A58%3A04Z&sp=r&sv=2021-08-06&sr=b&rscd=inline&rsct=image/png&skoid=6aaadede-4fb3-4698-a8f6-684d7786b067&sktid=a48cca56-e6da-484e-a814-9c849652bcb3&skt=2023-10-23T20%3A51%3A29Z&ske=2023-10-24T20%3A51%3A29Z&sks=b&skv=2021-08-06&sig=U3rtprSkuWVqmcl918sTqZNzDhXiKouqRegeashNp5o%3D"
+        );
+
+        updateActiveGroupGameStateChanged(socket);
+
+        return;
+        // temp for now to not waste api calls
+
+        // do AI stuff etc.
+        const response = openai.images
+            .generate({
+                prompt: "Green guy in loincloth standing in a swamp.",
+                n: 1,
+                size: "512x512",
+            })
+            .then((result) => {
+                // TODO : I think it could do with checking if there is data first
+                // TODO : Also considering a system with buffs like more pictures to chose from, this won't work for it
+                group?.gameState.imageURIs.push(result.data[0].url!);
+
+                updateActiveGroupGameStateChanged(socket);
+            });
+
+        return;
+
+        // FIXME : this happens later on in the process not here!!!
         // Switch turns
 
         // TODO : implementation only works for 2 players, could think of something for more
-        let otherUser = group.users.find(
-            (user) => user.userID != group?.gameState.currentTurnID
-        );
 
-        if (otherUser == undefined) {
-            console.log(
-                "ERROR: Can't switch turns cause other player is missing"
-            );
-            return;
-        }
+        // let otherUser = group.users.find(
+        //     (user) => user.userID != group?.gameState.currentTurnID
+        // );
 
-        group.gameState.currentTurnID = otherUser.userID;
-        console.log(
-            "current turn : " +
-                group.gameState.currentTurnID +
-                " changing to : " +
-                otherUser?.userID
-        );
+        // if (otherUser == undefined) {
+        //     console.log(
+        //         "ERROR: Can't switch turns cause other player is missing"
+        //     );
+        //     return;
+        // }
 
-        // Add new topic for new current user
+        // group.gameState.currentTurnID = otherUser.userID;
+        // console.log(
+        //     "current turn : " +
+        //         group.gameState.currentTurnID +
+        //         " changing to : " +
+        //         otherUser?.userID
+        // );
 
-        group.gameState.topics.push("helo" + Math.random());
+        // // Add new topic for new current user
 
-        updateActiveGroupGameStateChanged(socket);
+        // group.gameState.topics.push("helo" + Math.random());
+
+        // updateActiveGroupGameStateChanged(socket);
     });
 
     socket.on("disconnect", () => {
