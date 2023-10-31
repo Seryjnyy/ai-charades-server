@@ -1,5 +1,8 @@
 {
-    "topicNames":["cartoons", "shows"],
-    "cartoons":["Ben 10", "Scooby-doo", "Kick Buttowski", "Ed, Edd and Eddy", "Courage the Cowardly Dog", "Johnny Bravo", "Johnny Test", "Phineas and Ferb"],
+    "topicNames":["cartoons", "shows", "movies", "super heroes", "anime"],
+    "movies":["The Shawshank Redemption", " Fight Club", "Forrest Gump", "The Matrix", "The Godfather", "The Lord of the Rings", "The Wolf of Wall Street", "WALL-E", "Pirates of the Caribbean", "UP", "The Lion King", "Finding Nemo", "Toy Story", "Monsters Inc", "Harry Potter", "Terminator", "Snatch", "Ratatouille"],
+    "super heroes":["Spider Man", "Batman", "Iron Man", "Thor", "Hulk", "Captain America", "Superman", "Wolverine"],
+    "anime":["Fullmetal Alchemist", "Bleach", "One Piece", "Naruto", "Attack on Titan", "Hunter x Hunter", "Death Note", "One punch man", "My Hero Academia", "Haikyuu", "Parasyte the Maxim", "JoJos Bizarre Adventure"],
+    "cartoons":["Ben 10", "Scooby-doo", "Kick Buttowski", "Ed, Edd and Eddy", "Courage the Cowardly Dog", "Johnny Bravo", "Johnny Test", "Phineas and Ferb", "Avatar", "Teenage Mutant Ninja Turtles", "Rick and Morty", "The Simpsons"],
     "shows":["Game of Thrones", "Breaking Bad", "House of Cards", "Mandalorian"]
 }

@@ -38,14 +38,15 @@ app.use(cors());
 
 app.use(userRouter);
 
-enum Rounds {
+export enum Rounds {
     Lobby = "LOBBY",
     Prompting = "PROMPTING",
     Guessing = "GUESSING",
     Results = "RESULTS",
+    ErrorAPlayerLeft = "ERROR:A_PLAYER_LEFT",
 }
 
-interface GameState {
+export interface GameState {
     round: Rounds;
 }
 
@@ -65,9 +66,10 @@ interface ActiveRoomUser {
     userID: string;
     socket: any;
     gameState: GameStateUser;
+    userAvatarSeed: string;
 }
 
-interface ActiveRoom {
+export interface ActiveRoom {
     groupID: string;
     users: ActiveRoomUser[];
     settings: RoomSettings;
@@ -76,7 +78,7 @@ interface ActiveRoom {
     availableTopics: string[];
 }
 
-interface RoomSettings {
+export interface RoomSettings {
     maxPlayer: number;
     gameType?: string;
     selectedTopics: string[];
@@ -102,25 +104,6 @@ function createInitialUserGameState(): GameStateUser {
     };
 }
 
-function informUserAboutRoomMetadata(socket: SocketIo.Socket) {
-    let group = active_rooms.find(
-        (element) => element.groupID == socket.handshake.query.groupID
-    );
-
-    if (group == undefined) {
-        console.log(
-            "ERROR: Can't inform user about metadata because group doesn't exist."
-        );
-        return;
-    }
-
-    socket.emit("metadata", {
-        gameType: "bowling",
-        creator: group.creator,
-        maxPlayer: group.settings.maxPlayer,
-    });
-}
-
 // TODO : this should be part of game state or maybe a separate lobby room state im not sure
 function updateActiveGroupUsersChanged(socket: SocketIo.Socket) {
     // on new socket connect, let everyone in group know about the change
@@ -128,9 +111,7 @@ function updateActiveGroupUsersChanged(socket: SocketIo.Socket) {
     // send array of userIDs for now
     // need to find group again cause group from before can be null
     // TODO : could be better
-    let group = active_rooms.find(
-        (element) => element.groupID == socket.handshake.query.groupID
-    );
+    let group = getGroup(socket);
 
     if (group == undefined) {
         console.log(
@@ -139,28 +120,13 @@ function updateActiveGroupUsersChanged(socket: SocketIo.Socket) {
         return;
     }
 
-    let userList = group.users.map((x) => x.userID);
+    let userList = group.users.map((x) => ({
+        userID: x.userID,
+        userAvatarSeed: x.userAvatarSeed,
+        username: x.userID.split("@")[0],
+    }));
     group.users.forEach((user) => {
         user.socket.emit("user_change", userList);
-    });
-}
-
-function updateActiveGroupGameStateChanged(socket: SocketIo.Socket) {
-    let group = active_rooms.find(
-        (element) => element.groupID == socket.handshake.query.groupID
-    );
-
-    if (group == undefined) {
-        console.log(
-            "ERROR: Failed to update Active Group users that GameState has changed because could not find Active Group."
-        );
-        return;
-    }
-
-    let userList = group.users.map((x) => x.userID);
-    group.users.forEach((user) => {
-        console.log("updateing usrs");
-        user.socket.emit("game_state_update", group!.gameState);
     });
 }
 
@@ -170,75 +136,25 @@ function addUserToGroup(socket: SocketIo.Socket) {
     // TODO : when creating the active group, add metadata
     // TODO : ik updateActive... can be done after if, but want to keep the logic together, less messy
 
-    let group = active_rooms.find(
-        (element) => element.groupID == socket.handshake.query.groupID
-    );
+    let group = getGroup(socket);
+
     if (group) {
         if (typeof socket.handshake.query.userID != "string") {
             return;
+        }
+
+        let userAvatarSeed = socket.handshake.query.userAvatarSeed;
+        if (userAvatarSeed == undefined || typeof userAvatarSeed != "string") {
+            userAvatarSeed = "" + Date();
         }
 
         group.users.push({
             userID: socket.handshake.query.userID,
             socket: socket,
             gameState: createInitialUserGameState(),
+            userAvatarSeed: userAvatarSeed,
         });
         updateActiveGroupUsersChanged(socket);
-    } else {
-        // find the room data from when it was created
-        let storedGroup = temp_rooms.find(
-            (item) => item.roomID == socket.handshake.query.groupID
-        );
-
-        if (storedGroup == undefined) {
-            console.log(
-                "ERROR: Failed to create a Active Room because provided groupID is wrong. It does not match any of the existing rooms."
-            );
-
-            // TODO : can't continue here need to close
-            socket.emit("errorEvent", "ERROR:Failed to create active group");
-            return;
-        }
-
-        // check passed in data from client through query
-        if (typeof socket.handshake.query.userID != "string") {
-            return;
-        }
-        if (typeof socket.handshake.query.groupID != "string") {
-            return;
-        }
-
-        // create active group
-        active_rooms.push({
-            groupID: socket.handshake.query.groupID,
-            creator: storedGroup.creator,
-            users: [
-                {
-                    userID: socket.handshake.query.userID,
-                    socket: socket,
-                    gameState: createInitialUserGameState(),
-                },
-            ],
-            settings: storedGroup.settings,
-            gameState: {
-                round: Rounds.Lobby,
-            },
-            availableTopics: getCombinedTopicList(
-                storedGroup.settings.selectedTopics
-            ),
-        });
-        updateActiveGroupUsersChanged(socket);
-        // TODO : temp fix for client cause its using gamestate to determine the UI, so it needs it when it connects
-        // to change from the starting room to lobby
-        let group = active_rooms.find(
-            (element) => element.groupID == socket.handshake.query.groupID
-        );
-        socket.emit("game_state_update", {
-            gameState: group?.gameState,
-            ourState: group?.users.find(
-                (user) => user.userID == socket.handshake.query.userID
-            )?.gameState,
-        });
     }
 }
 
@@ -272,13 +188,40 @@ app.get("/test", async (req, res) => {
     );
 });
 
+app.get("/testTopics", async (req, res) => {
+    let topicList = getCombinedTopicList(["cartoons", "shows"]);
+
+    let topic_amount = 3;
+    let results = [];
+    for (let i = 0; i < 2; i++) {
+        results.push({
+            id: i,
+            topics: topicList.slice(i * topic_amount, (i + 1) * topic_amount),
+        });
+    }
+
+    res.send({ original: topicList, results: results });
+});
+
+app.get("/rooms", (req, res) => {
+    res.send(
+        JSON.stringify(
+            active_rooms.map((room) => ({
+                roomID: room.groupID,
+                creator: room.creator,
+                users: room.users.map((user) => ({ userID: user.userID })),
+            }))
+        )
+    );
+});
+
 // Simulate delays with gpt
-const getImageFromPrompt = async (
+export const getImageFromPrompt = async (
     prompt: string,
     amount: number,
     size: "256x256" | "512x512" | "1024x1024"
 ) => {
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    // await new Promise((resolve) => setTimeout(resolve, 5000));
 
     // do AI stuff etc.
     // const response = await openai.images.generate({
@@ -290,9 +233,12 @@ const getImageFromPrompt = async (
     // TODO : I think it could do with checking if there is data first
     // TODO : Also considering a system with buffs like more pictures to chose from, this won't work for it
 
-    // console.log(response.data);
+    // console.log(response.data[0].url);
 
     return "data:image/jpeg;base64,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";
+    // return response.data[0].url != undefined
+    //     ? response.data[0].url
+    //     : "data:image/jpeg;base64,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";
 };
 
 interface Result {
@@ -316,24 +262,42 @@ function getResultsOfGame(group: ActiveRoom): Result[] {
 
     // TODO : change back for it to work properly, only for testing rn
     let user = group.users[0];
-    let otherUser = group.users[0];
+    let otherUser = group.users[1];
 
     for (let i = 0; i < user.gameState.topics.length; i++) {
         results.push({
             topic: user.gameState.topics[i],
             prompt: user.gameState.prompts[i],
-            imageURI:
-                "data:image/jpeg;base64,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",
+            imageURI: user.gameState.imageURIsFromPrompts[i],
             originatorID: user.userID,
+            prompter: {
+                userID: user.userID,
+                username: user.userID.split("@")[0],
+                userAvatarSeed: user.userAvatarSeed,
+            },
+            guesser: {
+                userID: otherUser.userID,
+                username: otherUser.userID.split("@")[0],
+                userAvatarSeed: otherUser.userAvatarSeed,
+            },
             guess: otherUser.gameState.guesses[i],
         });
 
         results.push({
             topic: otherUser.gameState.topics[i],
             prompt: otherUser.gameState.prompts[i],
-            imageURI:
-                "data:image/jpeg;base64,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",
+            imageURI: otherUser.gameState.imageURIsFromPrompts[i],
             originatorID: otherUser.userID,
+            prompter: {
+                userID: otherUser.userID,
+                username: otherUser.userID.split("@")[0],
+                userAvatarSeed: otherUser.userAvatarSeed,
+            },
+            guesser: {
+                userID: user.userID,
+                username: user.userID.split("@")[0],
+                userAvatarSeed: user.userAvatarSeed,
+            },
             guess: user.gameState.guesses[i],
         });
     }
@@ -364,15 +328,22 @@ function isUserValid(): boolean {
 function canUserJoinGroup(socket: SocketIo.Socket): boolean {
     let group = getGroup(socket);
 
+    // TODO : commented out for now because I don't know how to solve this issue.
+    // client connects through socket in useEffect, but in dev useEffect renders twice
+    // so 2 connection attempts are made for the same client.
+    // Even providing a clean up function, socket.disconnect, it still happens because the 2nd connection is faster than the clean up
+    // NVM, but if there is issue with this, this might be it
     if (group) {
-        if (group.users.length + 10 > group.settings.maxPlayer) {
+        if (group.users.length > group.settings.maxPlayer) {
             console.log("ERROR : Can't join group because room is full.");
             return false;
         }
     }
 
-    return false;
+    return true;
 }
+
+console.log("SERVER -- SERVER -- SERVER -- SERVER -- SERVER -- SERVER --");
 
 // Middleware, for initial socket connection
 io.use((socket, next) => {
@@ -388,7 +359,7 @@ io.use((socket, next) => {
     next();
 });
 
-var active_rooms: ActiveRoom[] = [];
+export var active_rooms: ActiveRoom[] = [];
 
 io.on("connect", (socket) => {
     console.log("SOCKET::CONNECTED");
@@ -396,10 +367,18 @@ io.on("connect", (socket) => {
     if (typeof socket.handshake.query.userID != "string") {
         return;
     }
-    addUserToGroup(socket);
 
-    // Once user is connected let them know about the room metadata (gametype, etc.)
-    informUserAboutRoomMetadata(socket);
+    addUserToGroup(socket);
+    let group = getGroup(socket);
+    socket.emit("room_state_update", {
+        roomState: {
+            availableTopics: group?.availableTopics,
+            creator: group?.creator,
+            settings: group?.settings,
+        },
+    });
+
+    // }})
 
     // Game state
     // 2 out of 2 players etc.
@@ -412,9 +391,7 @@ io.on("connect", (socket) => {
     // });
 
     socket.on("start_game", (message) => {
-        let group = active_rooms.find(
-            (element) => element.groupID == socket.handshake.query.groupID
-        );
+        let group = getGroup(socket);
 
         if (group == undefined) {
             console.log(
@@ -424,27 +401,32 @@ io.on("connect", (socket) => {
         }
 
         // TODO : Check if there are 2 players
-        if (group.users.length < 2) {
+        if (group.users.length < 1) {
             console.log(
                 "ERROR: Can't start because there is not enough players."
             );
+            return;
         }
 
         // START CREATING PROMPTS STAGE
 
-        if (group.availableTopics == undefined) {
-            console.log("ERROR : No available topics");
+        if (group.settings.selectedTopics.length == 0) {
+            console.log("ERROR : No available topics, pick some topics");
             return;
         }
 
         // set initial topics for both users
         // TODO : this is not working correctly, only getting 2 topics instead of 3
-        const topic_amount = 3;
+
+        const topic_amount = 1;
+        let topicList = getCombinedTopicList(group.settings.selectedTopics);
+
+        console.log(topicList);
         group.users.forEach((user, index) => {
             // TODO : There will be issues if there is not enough topics
-            user.gameState.topics = group!.availableTopics.slice(
+            user.gameState.topics = topicList.slice(
                 index * topic_amount,
-                (index + 1) * topic_amount - 1
+                (index + 1) * topic_amount
             );
         });
 
@@ -455,9 +437,7 @@ io.on("connect", (socket) => {
         group.users.forEach((user) => {
             user.socket.emit("game_start", {
                 gameState: group?.gameState,
-                ourState: group?.users.find(
-                    (user) => user.userID == socket.handshake.query.userID
-                )?.gameState,
+                ourState: user.gameState,
             });
         });
 
@@ -509,9 +489,11 @@ io.on("connect", (socket) => {
         if (everyoneFinished) {
             group.gameState.round = Rounds.Results;
 
-            user.socket.emit("game_state_update", {
-                gameState: group.gameState,
-                ourState: user.gameState,
+            group.users.forEach((groupUser) => {
+                groupUser.socket.emit("game_state_update", {
+                    gameState: group!.gameState,
+                    ourState: groupUser.gameState,
+                });
             });
 
             // combine everything
@@ -563,11 +545,24 @@ io.on("connect", (socket) => {
 
         // ask dalle for image
         // TODO : resolve prompt issues at the end, like if dalle refuses, when user is done then redo basically
-        getImageFromPrompt("TEMPREMOVETHIS", 1, "256x256").then((res) => {
+        getImageFromPrompt(message.prompt, 1, "256x256").then((res) => {
             user!.gameState.imageURIsFromPrompts.push(res);
 
             // Check if all users are finished
             let everyoneFinished = true;
+
+            // TODO : should throw errors to user
+            if (group!.users.length < 2) {
+                console.log(
+                    "ERROR : Not enough players for the guessing stage"
+                );
+                return;
+            }
+
+            group!.users[0].gameState.imagesToGuess =
+                group!.users[1].gameState.imageURIsFromPrompts;
+            group!.users[1].gameState.imagesToGuess =
+                group!.users[0].gameState.imageURIsFromPrompts;
 
             // Check all users, if they have not went through their entire topics array then not everyone finished yet
             // TODO : i think group won't be undefined here idk tho
@@ -588,12 +583,14 @@ io.on("connect", (socket) => {
                 console.log("EVeryone did finishd");
                 group!.gameState.round = Rounds.Guessing;
 
+                // There is only 2 players so exchange their image links
+
                 group!.users.forEach((user) => {
                     // TODO : basically code from below get the other players images and set it for this user
                     user.gameState.imagesToGuess =
                         user.gameState.imageURIsFromPrompts;
 
-                    socket.emit("game_state_update", {
+                    user.socket.emit("game_state_update", {
                         gameState: group!.gameState,
                         ourState: user.gameState,
                     });
@@ -636,6 +633,35 @@ io.on("connect", (socket) => {
         return;
     });
 
+    socket.on("room:select_topic", (topic: string) => {
+        let group = getGroup(socket);
+
+        group?.settings.selectedTopics.push(topic);
+
+        group?.users.forEach((user) =>
+            user.socket.emit(
+                "room:topic_update",
+                group?.settings.selectedTopics
+            )
+        );
+    });
+
+    socket.on("room:remove_topic", (topic: string) => {
+        let group = getGroup(socket);
+
+        if (!group) return;
+
+        group.settings.selectedTopics = group?.settings.selectedTopics.filter(
+            (item) => item != topic
+        );
+        group?.users.forEach((user) =>
+            user.socket.emit(
+                "room:topic_update",
+                group?.settings.selectedTopics
+            )
+        );
+    });
+
     socket.on("disconnect", () => {
         console.log("SOCKET::DISCONNECTED");
         let group = active_rooms.find(
@@ -649,19 +675,45 @@ io.on("connect", (socket) => {
             return;
         }
 
+        // TODO : not sure if to close the room immediately, or let it sit for a bit
         // last user in group, remove entire group
         // else just remove user, then can notify the rest that a person left
-        if (group.users.length == 1) {
-            active_rooms = active_rooms.filter(
-                (item) => item.groupID != group?.groupID
-            );
-        } else {
-            group.users = group.users.filter(
-                (item) => item.userID != socket.handshake.query.userID
-            );
+        // if (group.users.length == 1) {
+        //     active_rooms = active_rooms.filter(
+        //         (item) => item.groupID != group?.groupID
+        //     );
+        // } else {
+        //     group.users = group.users.filter(
+        //         (item) => item.userID != socket.handshake.query.userID
+        //     );
+        // }
+
+        group.users = group.users.filter(
+            (item) => item.userID != socket.handshake.query.userID
+        );
+
+        // If users are in lobby then update them about player leaving
+        // However if a player leaves during the game stage, Prompting and Guessing then need to abort the game.
+        // Update users about a new game state, a error state.
+        // TODO : before user is removed from group we could use the data to show a early finish from what is remaining
+        // or we could pause the game, wait till another player joins and assign them that data
+        // might need to make sure its the same user that was playing before
+        // this all happening only in the game stage
+        if (group.gameState.round == Rounds.Lobby) {
+            updateActiveGroupUsersChanged(socket);
+        } else if (
+            group.gameState.round == Rounds.Guessing ||
+            group.gameState.round == Rounds.Prompting
+        ) {
+            group.gameState.round = Rounds.ErrorAPlayerLeft;
+            group.users.forEach((groupUser) => {
+                groupUser.socket.emit("game_state_update", {
+                    gameState: group!.gameState,
+                    ourState: groupUser.gameState, // player doesn't really need this since game ended
+                });
+            });
         }
-        // temp_users = temp_users.filter((x) => x.socket.id != socket.id);
-        // console.log(temp_users.map((user) => user.id));
+
         console.log(active_rooms);
     });
 });

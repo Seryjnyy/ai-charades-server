@@ -1,25 +1,58 @@
 import { Router } from "express";
-import { temp_rooms } from "..";
+import { RoomSettings, Rounds, active_rooms, temp_rooms } from "..";
+import { createRoom } from "../services/activeRoomService";
+import * as availableTopics from "../topics.json";
 
 const userRouter = Router();
 
-userRouter.post("/api/rooms/create", (req, res) => {
-    console.log("API USE");
-    console.log(req.body.userID);
+function getRoomDefaultSettings(): RoomSettings {
+    return { maxPlayer: 2, selectedTopics: [] };
+}
 
-    // check for empty: userID, roomSettings
+// TODO : better random ID, or maybe db deals with this
+function getRandomGroupID(): string {
+    return "id" + Math.random().toString(16).slice(2);
+}
 
-    var id = "id" + Math.random().toString(16).slice(2);
-    temp_rooms.push({
-        roomID: id,
+function getAvailableTopics(): string[] {
+    return availableTopics.topicNames;
+}
+
+userRouter.post("/api/rooms/create", async (req, res) => {
+    // TODO : probably should be caught my middleware
+    if (!req.body.userID) {
+        res.status(400).send(
+            "Couldn't create room because request is missing UserID."
+        );
+        return;
+    }
+
+    if (typeof req.body.userID != "string") {
+        res.status(400).send(
+            "Couldn't create room because because UserID is not string."
+        );
+        return;
+    }
+
+    let roomID = getRandomGroupID();
+
+    let success = await createRoom({
+        groupID: roomID,
         creator: req.body.userID,
-        settings: {
-            maxPlayer: req.body.roomSettings.maxPlayer,
-            selectedTopics: req.body.roomSettings.selectedTopics,
-        },
+        users: [],
+        settings: getRoomDefaultSettings(),
+        gameState: { round: Rounds.Lobby },
+        availableTopics: getAvailableTopics(),
     });
 
-    res.send(req.body);
+    if (success) {
+        console.log("sending this");
+        res.send({ roomID: roomID });
+    } else {
+        res.status(500).send(
+            "Couldn't create room because something went wrong. Try again in a bit."
+        );
+    }
 });
 
 userRouter.get("/api/rooms/:userID", (req, res) => {
