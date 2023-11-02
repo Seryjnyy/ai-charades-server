@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { RoomSettings, Rounds, active_rooms, temp_rooms } from "..";
+import { RoomSettings, Rounds, TopicGroup, active_rooms, temp_rooms } from "..";
 import { createRoom } from "../services/activeRoomService";
 import * as availableTopics from "../topics.json";
 
@@ -14,8 +14,26 @@ function getRandomGroupID(): string {
     return "id" + Math.random().toString(16).slice(2);
 }
 
-function getAvailableTopics(): string[] {
-    return availableTopics.topicNames;
+function getAvailableTopics(): TopicGroup[] {
+    // using topic names find out the number of items in it
+    let topics: TopicGroup[] = [];
+
+    availableTopics.topicNames.forEach((topic) => {
+        if (
+            topic == "anime" ||
+            topic == "movies" ||
+            topic == "cartoons" ||
+            topic == "shows" ||
+            topic == "super heroes"
+        ) {
+            topics.push({
+                topic: topic,
+                itemsInTopic: availableTopics[topic].length,
+            });
+        }
+    });
+
+    return topics;
 }
 
 userRouter.post("/api/rooms/create", async (req, res) => {

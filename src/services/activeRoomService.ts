@@ -1,6 +1,7 @@
-import { ActiveRoom, GameState, RoomSettings, active_rooms } from "..";
+import SocketIo from "socket.io";
+import { ActiveRoom, active_rooms, GameStateUser } from "..";
 
-export async function createRoom({
+async function createRoom({
     groupID,
     creator,
     users,
@@ -21,3 +22,37 @@ export async function createRoom({
 
     return true;
 }
+
+// TODO : if rooms will be stored in persistant storage, then there is the issue of storing the socket
+// rn it stores the socket object, would need to change to storing socket id, then storing the socket ref
+// somewhere, or start using socket io rooms
+async function addUserToRoom(
+    roomID: string,
+    userID: string,
+    socket: SocketIo.Socket,
+    gameState: GameStateUser,
+    userAvatarSeed: string
+) {
+    let room = getRoom(roomID);
+
+    if (room == undefined) {
+        return false;
+    }
+
+    room.users.push({
+        userID: userID,
+        socket: socket,
+        gameState: gameState,
+        userAvatarSeed: userAvatarSeed,
+    });
+
+    return true;
+}
+
+function getRoom(roomID: string): ActiveRoom | undefined {
+    let room = active_rooms.find((element) => element.groupID == roomID);
+
+    return room;
+}
+
+export { createRoom, addUserToRoom, getRoom };
