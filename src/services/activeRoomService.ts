@@ -8,6 +8,7 @@ async function createRoom({
     settings,
     gameState,
     availableTopics,
+    resultState,
 }: ActiveRoom) {
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
@@ -18,6 +19,7 @@ async function createRoom({
         settings: settings,
         gameState: gameState,
         availableTopics: availableTopics,
+        resultState: resultState,
     });
 
     return true;
@@ -31,7 +33,8 @@ async function addUserToRoom(
     userID: string,
     socket: SocketIo.Socket,
     gameState: GameStateUser,
-    userAvatarSeed: string
+    userAvatarSeed: string,
+    initialCredits: number
 ) {
     let room = getRoom(roomID);
 
@@ -44,6 +47,7 @@ async function addUserToRoom(
         socket: socket,
         gameState: gameState,
         userAvatarSeed: userAvatarSeed,
+        initialCredits: initialCredits,
     });
 
     return true;

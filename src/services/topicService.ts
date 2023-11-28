@@ -21,6 +21,8 @@ function getCombinedTopicList(topicGroups: string[]): string[] {
             case "anime":
                 topicGroupData.push(availableTopics.anime);
                 break;
+            case "pokemon":
+                topicGroupData.push(availableTopics.pokemon);
         }
     });
 

@@ -1,9 +1,9 @@
 import "dotenv/config";
 import express from "express";
-import { createServer } from "http";
+import { createServer } from "https";
 import { OpenAI } from "openai";
 import SocketIo, { Server } from "socket.io";
-import { userRouter } from "./routes/room";
+import { roomRouter } from "./routes/room";
 var bodyParser = require("body-parser");
 var cors = require("cors");
 import { logger } from "./logger";
@@ -13,6 +13,14 @@ import {
 } from "./services/imageGenerationService";
 import { getCombinedTopicList } from "./services/topicService";
 import { addUserToRoom, getRoom } from "./services/activeRoomService";
+import { readFileSync } from "fs";
+import { testRouter } from "./routes/tests";
+import { userRouter } from "./routes/user";
+import {
+    decrementAccessKey,
+    getCreditAmountForAccessKey,
+    isAccessKeyValid,
+} from "./services/accessKeyService";
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -37,7 +45,7 @@ interface ServerToClientEvents {
     "room:topic_update": (selectedTopics: string[]) => void;
     "room:warning": (message: string) => void;
     "room:error": (message: string) => void;
-    results: (results: { results: Result[] }) => void;
+    results: (results: { results: Result[]; resultPlace: number }) => void;
     game_state_update: (gameState: {
         gameState: GameState;
         ourState: GameStateUser;
@@ -53,6 +61,7 @@ interface ServerToClientEvents {
             username: string;
         }[]
     ) => void;
+    "results:next": (resultState: { resultPlace: number }) => void;
 }
 
 interface ClientToServerEvents {
@@ -64,6 +73,9 @@ interface ClientToServerEvents {
     ) => Promise<void>;
     "room:select_topic": (topic: string) => void;
     "room:remove_topic": (topic: string) => void;
+    "results:next": () => void;
+    "room:nextResultPermission": (setting: string) => void;
+    "room:changeRoundCount": (count: number) => void;
 }
 
 interface InterServerEvents {}
@@ -72,15 +84,21 @@ interface SocketData {
     userID: string;
     roomID: string;
     userAvatarSeed: string;
+    accessKey: string;
 }
 
-const server = createServer(app);
+var privateKey = readFileSync("./cert/key.pem", "utf8");
+var certificate = readFileSync("./cert/cert.pem", "utf8");
+
+var credentials = { key: privateKey, cert: certificate };
+
+const httpsServer = createServer(credentials, app);
 const io = new Server<
     ClientToServerEvents,
     ServerToClientEvents,
     InterServerEvents,
     SocketData
->(server, { cors: { origin: "*" } });
+>(httpsServer, { cors: { origin: "*" } });
 // if problem with websocket cors : https://www.youtube.com/watch?v=1BfCnjr_Vjg&t=392s
 const PORT = process.env.PORT || 3000;
 
@@ -91,7 +109,25 @@ app.use(cors());
 // TODO : need persistent storage for groups
 // might get a away with in memory for active groups for now
 
+// user router above middleware because we want the register endpoint to be open
+// if more endpoints in user then change it
 app.use(userRouter);
+app.use(testRouter);
+
+app.use(async (req, res, next) => {
+    if (!req.headers.authorization) {
+        return res.status(401).json({ error: "No credentials provided." });
+    }
+
+    let isValid = await isAccessKeyValid(req.headers.authorization);
+    if (!isValid) {
+        return res.status(401).json({ error: "Un-authorized" });
+    }
+
+    next();
+});
+
+app.use(roomRouter);
 
 export enum Rounds {
     Lobby = "LOBBY",
@@ -126,6 +162,7 @@ interface ActiveRoomUser {
     >;
     gameState: GameStateUser;
     userAvatarSeed: string;
+    initialCredits: number;
 }
 
 export interface TopicGroup {
@@ -139,12 +176,14 @@ export interface ActiveRoom {
     settings: RoomSettings;
     creator: string;
     gameState: GameState;
+    resultState: { resultPlace: number };
     availableTopics: TopicGroup[];
 }
 
 export interface RoomSettings {
     maxPlayer: number;
-    gameType?: string;
+    nextResultPermission: string;
+    roundCount: number;
     selectedTopics: string[];
 }
 
@@ -200,7 +239,7 @@ function updateActiveGroupUsersChanged(
     });
 }
 
-function addUserToGroup(
+async function addUserToGroup(
     socket: SocketIo.Socket<
         ClientToServerEvents,
         ServerToClientEvents,
@@ -208,18 +247,30 @@ function addUserToGroup(
         SocketData
     >
 ) {
+    let creditAmountForAccessKey = await getCreditAmountForAccessKey(
+        socket.data.accessKey
+    );
+    if (creditAmountForAccessKey == null) {
+        logger.error(
+            "Can't add user to group, because access key data doesn't exist."
+        );
+        return;
+    }
+
     let addedUser = addUserToRoom(
         socket.data.roomID,
         socket.data.userID,
         socket,
         createInitialUserGameState(),
-        socket.data.userAvatarSeed
+        socket.data.userAvatarSeed,
+        creditAmountForAccessKey
     );
 
     if (!addedUser) {
         logger.error(
             "Can't add user to group, because group no longer exists."
         );
+        return;
     }
 
     updateActiveGroupUsersChanged(socket);
@@ -323,36 +374,50 @@ console.log("SERVER -- SERVER -- SERVER -- SERVER -- SERVER -- SERVER --");
 
 // Middleware, for initial socket connection
 // TODO : check all user data from handshake here before user actually connects, because socket.data will be set there
-io.use((socket, next) => {
+io.use(async (socket, next) => {
     // TODO : User can only have one room
     // returns used to satisfy TS
-
-    if (socket.handshake.query.userID == undefined) {
-        next(new Error("Can't join because there is no userID."));
+    if (typeof socket.handshake.query.accessKey != "string") {
+        next(new Error("Can't join, accessKey is incorrect."));
+        return;
     }
 
-    if (socket.handshake.query.groupID == undefined) {
-        next(new Error("Can't join because there is no groupID."));
+    let isValid = await isAccessKeyValid(socket.handshake.query.accessKey);
+    if (!isValid) {
+        next(new Error("Can't join, accessKey is not valid."));
+        return;
     }
+    // TODO : check if in any of the active rooms there is a user using the same access key
+    let accessKeyInUse = active_rooms
+        .map((room) =>
+            room.users.map(
+                (user) =>
+                    user.socket.data.accessKey ==
+                    socket.handshake.query.accessKey
+            )
+        )
+        .flat()
+        .includes(true);
 
-    if (socket.handshake.query.userAvatarSeed == undefined) {
-        next(new Error("Can't join because user has no avatar."));
+    if (accessKeyInUse) {
+        next(new Error("Can't join, accessKey is already in use."));
+        return;
     }
 
     // TODO : these already check for undefined, shouldn't need the code above
     if (typeof socket.handshake.query.userID != "string") {
         next(new Error("Can't join, userID is in wrong format."));
-        return; // needed because TS for the checking @ in userID
+        return;
     }
 
     if (typeof socket.handshake.query.groupID != "string") {
         next(new Error("Can't join, groupID is in wrong format."));
-        return; // needed because TS for the checking @ in userID
+        return;
     }
 
     if (typeof socket.handshake.query.userAvatarSeed != "string") {
         next(new Error("Can't join, userAvatarSeed is in wrong format."));
-        return; // needed because TS for the checking @ in userID
+        return;
     }
 
     // need to make sure because userID is sometimes split using @
@@ -365,6 +430,7 @@ io.use((socket, next) => {
     socket.data.userID = socket.handshake.query.userID;
     socket.data.roomID = socket.handshake.query.groupID;
     socket.data.userAvatarSeed = socket.handshake.query.userAvatarSeed;
+    socket.data.accessKey = socket.handshake.query.accessKey;
 
     if (getRoom(socket.data.roomID) == undefined) {
         next(new Error("Can't join room, it doesn't exist."));
@@ -405,7 +471,7 @@ function emitRoomErrorToUser(
     }
 }
 
-io.on("connect", (socket) => {
+io.on("connect", async (socket) => {
     logger.info(`Socket : ${socket.id} has connected.`);
 
     // socket middleware
@@ -421,7 +487,7 @@ io.on("connect", (socket) => {
         next();
     });
 
-    addUserToGroup(socket);
+    await addUserToGroup(socket);
 
     let group = getRoom(socket.data.roomID);
     if (group == undefined) {
@@ -432,6 +498,47 @@ io.on("connect", (socket) => {
         );
         return;
     }
+
+    socket.on("room:nextResultPermission", (setting) => {
+        if (setting != "host" && setting != "author") {
+            emitRoomErrorToUser(
+                socket,
+                "Can't change this setting, incorrect value.",
+                "WARNING"
+            );
+            console.log("setting wrong:" + setting);
+            return;
+        }
+
+        let room = getRoom(socket.data.roomID);
+
+        if (room == undefined) {
+            emitRoomErrorToUser(
+                socket,
+                "Can't change this setting, room is missing.",
+                "ERROR"
+            );
+            console.log("room2222");
+            return;
+        }
+
+        if (room.settings.nextResultPermission == setting) {
+            console.log("here2222222222");
+            return;
+        }
+
+        room.settings.nextResultPermission = setting;
+
+        room.users.forEach((groupUser) => {
+            groupUser.socket.emit("room_state_update", {
+                roomState: {
+                    availableTopics: room!.availableTopics,
+                    creator: room!.creator,
+                    settings: room!.settings,
+                },
+            });
+        });
+    });
 
     // let user know what topics are selected with this initial emit to them
     socket.emit("room:topic_update", group!.settings.selectedTopics);
@@ -457,7 +564,7 @@ io.on("connect", (socket) => {
         }
 
         // TODO : group.settings.maxPlayer does nothing
-        if (group.users.length < 1) {
+        if (group.users.length < 2) {
             emitRoomErrorToUser(
                 socket,
                 "Can't start game, not enough players.",
@@ -479,14 +586,36 @@ io.on("connect", (socket) => {
             return;
         }
 
+        // check if all users have enough credits for the amount of rounds of topics chosen
+        let enoughCredits = !group.users
+            .map(
+                (groupUser) =>
+                    groupUser.initialCredits > group!.settings.roundCount
+            )
+            .includes(false);
+
+        if (!enoughCredits) {
+            group.users.forEach((groupUser) => {
+                emitRoomErrorToUser(
+                    groupUser.socket,
+                    "Can't start not enough credits",
+                    "WARNING"
+                );
+            });
+            return;
+        }
+
         // set initial topics for both users
 
         // TODO : this is round amount, that the user should set, and we should get it from group.settings
-        const topic_amount = 2;
+
         let topicList = getCombinedTopicList(group.settings.selectedTopics);
 
         // If there is not enough topics, in the topic groups that were selected, for users in the game then don't start
-        if (topic_amount * group.users.length > topicList.length) {
+        if (
+            group!.settings.roundCount * group.users.length >
+            topicList.length
+        ) {
             emitRoomErrorToUser(
                 socket,
                 "Can't start game, pick more topics.",
@@ -498,8 +627,8 @@ io.on("connect", (socket) => {
 
         group.users.forEach((user, index) => {
             user.gameState.topics = topicList.slice(
-                index * topic_amount,
-                (index + 1) * topic_amount
+                index * group!.settings.roundCount,
+                (index + 1) * group!.settings.roundCount
             );
         });
 
@@ -564,10 +693,13 @@ io.on("connect", (socket) => {
                 });
             });
 
+            // get results for group
+
             // combine everything
             group.users.forEach((groupUser) => {
                 groupUser.socket.emit("results", {
                     results: getResultsOfGame(group!),
+                    resultPlace: 0,
                 });
             });
         } else {
@@ -576,6 +708,31 @@ io.on("connect", (socket) => {
                 ourState: user.gameState,
             });
         }
+    });
+
+    socket.on("results:next", () => {
+        let room = getRoom(socket.data.roomID);
+
+        if (room == undefined) {
+            // TODO : should emit to all users
+            emitRoomErrorToUser(
+                socket,
+                "Can't get next result, room doesn't exist.",
+                "ERROR"
+            );
+            return;
+        }
+
+        room.resultState.resultPlace += 1;
+
+        // TODO : can't check if resultPlace might be out of bounds, results are sent separately
+        // if(room.resultState.resultPlace > room.)
+
+        room.users.forEach((roomUser) =>
+            roomUser.socket.emit("results:next", {
+                resultPlace: room!.resultState.resultPlace,
+            })
+        );
     });
 
     socket.on("submit_prompt", async (message, callback) => {
@@ -625,7 +782,12 @@ io.on("connect", (socket) => {
         user.gameState.topicPlace += 1;
 
         // TODO : not sure if DALLE fails requests, will have to check
+        // TODO : I could ensure that the access key has enough credits before calling image generation
         imageGenerationSimulated(message.prompt, 1, "256x256").then((res) => {
+            // TODO : should do checks on the data
+
+            decrementAccessKey(socket.data.accessKey);
+
             user!.gameState.imageURIsFromPrompts.push(res);
 
             if (group!.users.length < 2) {
@@ -690,6 +852,40 @@ io.on("connect", (socket) => {
                 group!.settings.selectedTopics
             )
         );
+    });
+
+    socket.on("room:changeRoundCount", (count: number) => {
+        if (!(count % 2 == 0) || count > 12) {
+            emitRoomErrorToUser(
+                socket,
+                "Can't change round count to provided value.",
+                "WARNING"
+            );
+            return;
+        }
+
+        let room = getRoom(socket.data.roomID);
+
+        if (!room) {
+            emitRoomErrorToUser(
+                socket,
+                "Can't change round count, room doesn't exist.",
+                "ERROR"
+            );
+            return;
+        }
+
+        room.settings.roundCount = count;
+
+        room.users.forEach((groupUser) => {
+            groupUser.socket.emit("room_state_update", {
+                roomState: {
+                    availableTopics: room!.availableTopics,
+                    creator: room!.creator,
+                    settings: room!.settings,
+                },
+            });
+        });
     });
 
     socket.on("room:remove_topic", (topic: string) => {
@@ -767,6 +963,6 @@ io.on("connect", (socket) => {
     });
 });
 
-server.listen(PORT, () => {
+httpsServer.listen(PORT, () => {
     logger.info(`Server running on port: ${PORT}`);
 });

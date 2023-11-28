@@ -3,10 +3,15 @@ import { RoomSettings, Rounds, TopicGroup, active_rooms, temp_rooms } from "..";
 import { createRoom } from "../services/activeRoomService";
 import * as availableTopics from "../topics.json";
 
-const userRouter = Router();
+const roomRouter = Router();
 
 function getRoomDefaultSettings(): RoomSettings {
-    return { maxPlayer: 2, selectedTopics: [] };
+    return {
+        maxPlayer: 2,
+        selectedTopics: [],
+        nextResultPermission: "host",
+        roundCount: 2,
+    };
 }
 
 // TODO : better random ID, or maybe db deals with this
@@ -36,7 +41,7 @@ function getAvailableTopics(): TopicGroup[] {
     return topics;
 }
 
-userRouter.post("/api/rooms/create", async (req, res) => {
+roomRouter.post("/api/rooms/create", async (req, res) => {
     // TODO : probably should be caught my middleware
     if (!req.body.userID) {
         res.status(400).send(
@@ -61,6 +66,7 @@ userRouter.post("/api/rooms/create", async (req, res) => {
         settings: getRoomDefaultSettings(),
         gameState: { round: Rounds.Lobby },
         availableTopics: getAvailableTopics(),
+        resultState: { resultPlace: 0 },
     });
 
     if (success) {
@@ -73,15 +79,15 @@ userRouter.post("/api/rooms/create", async (req, res) => {
     }
 });
 
-userRouter.get("/api/rooms/:userID", (req, res) => {
-    let userRoomsIDs: string[] = [];
+// roomRouter.get("/api/rooms/:userID", (req, res) => {
+//     let userRoomsIDs: string[] = [];
 
-    temp_rooms.forEach((room) => {
-        let found = room.creator == req.params.userID;
-        if (found) userRoomsIDs.push(room.roomID);
-    });
+//     temp_rooms.forEach((room) => {
+//         let found = room.creator == req.params.userID;
+//         if (found) userRoomsIDs.push(room.roomID);
+//     });
 
-    res.send(JSON.stringify(userRoomsIDs));
-});
+//     res.send(JSON.stringify(userRoomsIDs));
+// });
 
-export { userRouter };
+export { roomRouter };

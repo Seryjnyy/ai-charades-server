@@ -10,6 +10,8 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.441.0",
+    "@aws-sdk/util-dynamodb": "^3.441.0",
     "@prisma/client": "^5.5.2",
     "@types/socket.io": "^3.0.2",
     "body-parser": "^1.20.2",
