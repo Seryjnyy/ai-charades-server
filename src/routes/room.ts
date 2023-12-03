@@ -1,5 +1,11 @@
 import { Router } from "express";
-import { RoomSettings, Rounds, TopicGroup, active_rooms, temp_rooms } from "..";
+import {
+    RoomSettings,
+    Rounds,
+    TopicGroup,
+    active_rooms,
+    temp_rooms,
+} from "../temp";
 import { createRoom } from "../services/activeRoomService";
 import * as availableTopics from "../topics.json";
 
@@ -42,6 +48,7 @@ function getAvailableTopics(): TopicGroup[] {
 }
 
 roomRouter.post("/api/rooms/create", async (req, res) => {
+    console.log("sthi");
     // TODO : probably should be caught my middleware
     if (!req.body.userID) {
         res.status(400).send(
@@ -59,24 +66,24 @@ roomRouter.post("/api/rooms/create", async (req, res) => {
 
     let roomID = getRandomGroupID();
 
-    let success = await createRoom({
-        groupID: roomID,
-        creator: req.body.userID,
-        users: [],
-        settings: getRoomDefaultSettings(),
-        gameState: { round: Rounds.Lobby },
-        availableTopics: getAvailableTopics(),
-        resultState: { resultPlace: 0 },
-    });
+    // let success = await createRoom({
+    //     roomID: roomID,
+    //     creator: req.body.userID,
+    //     users: [],
+    //     settings: getRoomDefaultSettings(),
+    //     state: "LOBBY"
+    //     lobbyState:{availableTopics: getAvailableTopics()},
+    //     resultState: { results : [], resultPlace: 0, currentRevealer:undefined},
+    // });
 
-    if (success) {
-        console.log("sending this");
-        res.send({ roomID: roomID });
-    } else {
-        res.status(500).send(
-            "Couldn't create room because something went wrong. Try again in a bit."
-        );
-    }
+    // if (success) {
+    //     console.log("sending this");
+    //     res.send({ roomID: roomID });
+    // } else {
+    //     res.status(500).send(
+    //         "Couldn't create room because something went wrong. Try again in a bit."
+    //     );
+    // }
 });
 
 // roomRouter.get("/api/rooms/:userID", (req, res) => {

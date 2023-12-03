@@ -1,5 +1,5 @@
 import SocketIo from "socket.io";
-import { ActiveRoom, active_rooms, GameStateUser } from "..";
+import { ActiveRoom, active_rooms, GameStateUser } from "../temp";
 
 async function createRoom({
     groupID,

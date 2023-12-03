@@ -24,6 +24,7 @@ testRouter.get("/test", async (req, res) => {
 });
 
 testRouter.get("/testTopics", async (req, res) => {
+    console.log("why");
     let topicList = getCombinedTopicList(["cartoons", "shows"]);
 
     let topic_amount = 3;
