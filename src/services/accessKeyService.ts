@@ -15,6 +15,8 @@ const AWS_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY
     ? process.env.AWS_SECRET_ACCESS_KEY
     : "";
 
+const DELAY_BETWEEN_RETRIES = 3000
+
 function getDBClient() {
     return new DynamoDBClient({
         region: "eu-west-2",
@@ -35,28 +37,81 @@ async function getCreditAmountForAccessKey(accessKey: string) {
     return accessKeyData.usesLeft;
 }
 
+function isDateValid(dateString : string){
+    const dateSplit : string[] = dateString.split("-")
+    if(dateSplit.length < 3){
+        return false
+    }
+
+    const todayDateSplit = new Date().toISOString().split("T")[0].split("-")
+
+    // Check year
+    if(parseInt(dateSplit[0]) < parseInt(todayDateSplit[0])){
+        return false
+    }
+
+    // Check month
+    // If the year is not larger than todays then check
+    if( !(parseInt(dateSplit[0]) > parseInt(todayDateSplit[0])) && parseInt(dateSplit[1]) < parseInt(todayDateSplit[1])){
+        return false
+    }
+
+    // Check day
+    // If the month is not larger than todays then check
+    if(!(parseInt(dateSplit[1])> parseInt(todayDateSplit[1])) && parseInt(dateSplit[2]) < parseInt(todayDateSplit[2])){
+        return false
+    }
+
+    return true
+}
+
 async function isAccessKeyValid(accessKey: string) {
     let accessKeyData = await getAccessKeyData(accessKey);
     console.log(accessKeyData);
     if (accessKeyData == null) {
         return false;
     }
-    // wrong accessKey provided
-    // TODO : expired access key, sorry access key is no longer valid
-    // also no longer valid if has 0 uses left
-    // console.log(new Date() < new Date("2023-11-04T17:58Z"));
 
+    if(accessKeyData.usesLeft <= 0){
+        return false
+    }
+
+    if(typeof accessKeyData.expiryDate != "string"){
+        return false
+    }
+
+    if(!isDateValid(accessKeyData.expiryDate)){
+        return false
+    }    
+
+    console.log("ACCESS KEY IS VALID")
     return true;
 }
 
-async function decrementAccessKey(accessKey: string) {
+function wait(delay:number){
+    return new Promise((resolve) => setTimeout(resolve, delay));
+}
+
+async function attemptDecrementAccessKey(accessKey:string, amount:number, retries:number){
+    for(let i = 0; i < retries; i++){
+        if(await decrementAccessKey(accessKey, amount)){
+            return true
+        }
+        await wait(DELAY_BETWEEN_RETRIES)
+    }
+
+    return false
+}
+
+async function decrementAccessKey(accessKey: string, amount:number) {
+    console.log("DECREMENT KEY")
     const client = getDBClient();
 
     const accessKeyData = await getAccessKeyData(accessKey);
-
+    
     if (accessKeyData == null) {
         console.log("Access key data does not exist");
-        return;
+        return false
     }
 
     const input: UpdateItemCommandInput = {
@@ -67,7 +122,7 @@ async function decrementAccessKey(accessKey: string) {
         },
         ExpressionAttributeValues: {
             ":ut": {
-                N: "" + (accessKeyData.usesLeft - 1),
+                N: "" + (accessKeyData.usesLeft - amount),
             },
         },
         UpdateExpression: "SET #UT = :ut",
@@ -80,12 +135,18 @@ async function decrementAccessKey(accessKey: string) {
         if (results.$metadata.httpStatusCode != 200) {
             // something went wrong
             // internal server error
+            console.log("Failed to update access key")
+            return false
         }
 
         console.log(results);
+        return true
     } catch (err) {
         console.error(err);
+        return false
     }
+
+    return false
 }
 
 async function getAccessKeyData(accessKey: string) {
@@ -125,7 +186,7 @@ async function getAccessKeyData(accessKey: string) {
 
 export {
     getAccessKeyData,
-    decrementAccessKey,
+    attemptDecrementAccessKey,
     isAccessKeyValid,
     getCreditAmountForAccessKey,
 };

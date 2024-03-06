@@ -8,6 +8,7 @@ var bodyParser = require("body-parser");
 var cors = require("cors");
 import { logger } from "./logger";
 import {
+    imageGeneration,
     imageGenerationSimulated,
     promptModeration,
 } from "./services/imageGenerationService";
@@ -16,14 +17,17 @@ import { readFileSync } from "fs";
 import { testRouter } from "./routes/tests";
 import { userRouter } from "./routes/user";
 import {
-    decrementAccessKey,
+    attemptDecrementAccessKey,
     getCreditAmountForAccessKey,
     isAccessKeyValid,
 } from "./services/accessKeyService";
 import * as availableTopics from "./topics.json";
+import { ImagesResponse } from "openai/resources";
 
 const SERVER_MAX_PROMPT_CHARACTER_LIMIT = 300;
 const SERVER_MAX_GUESS_CHARACTER_LIMIT = 300;
+
+const MAX_DECREMENT_ACCESS_KEY_ATTEMPTS = 2
 
 const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY,
@@ -68,6 +72,7 @@ interface ClientToServerEvents {
     "lobby:remove_topic": (topic: string) => void;
     "lobby:setting:change_result_control": (setting: string) => void;
     "lobby:setting:change_round_count": (roundCount: number) => void;
+    "lobby:setting:change_ai_model": (model: AIModel) => void;
     "game:submit_prompt": (
         prompt: string,
         callback: (result: { success: boolean; reason: string }) => void
@@ -112,7 +117,6 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 
-// TODO : group should be named room, or something uniform
 // TODO : use tokens auth to only allow 1 web socket connection per account
 // TODO : need persistent storage for groups
 // might get a away with in memory for active groups for now
@@ -138,10 +142,13 @@ app.use(async (req, res, next) => {
     next();
 });
 
+type AIModel = "dall-e-2" | "dall-e-3"
+
 export interface RoomSettings {
     maxPlayer: number;
     nextResultPermission: "AUTHOR" | "HOST";
     roundCount: number;
+    aiModel: AIModel
 }
 
 export interface TopicGroup {
@@ -190,7 +197,7 @@ export interface ActiveRoom {
 }
 
 // TODO : better random ID, or maybe db deals with this
-function getRandomGroupID(): string {
+function createRandomRoomID(): string {
     return "id" + Math.random().toString(16).slice(2);
 }
 
@@ -199,6 +206,7 @@ function getRoomDefaultSettings(): RoomSettings {
         maxPlayer: 2,
         nextResultPermission: "HOST",
         roundCount: 2,
+        aiModel:"dall-e-2"
     };
 }
 
@@ -225,7 +233,7 @@ function getAvailableTopics(): TopicGroup[] {
 }
 
 app.post("/api/rooms/create", async (req, res) => {
-    console.log("called");
+    console.log("API_CALL:CREATE_ROOM")
     // TODO : probably should be caught my middleware
     if (!req.body.userID) {
         res.status(400).send(
@@ -236,12 +244,40 @@ app.post("/api/rooms/create", async (req, res) => {
 
     if (typeof req.body.userID != "string") {
         res.status(400).send(
-            "Couldn't create room because because UserID is not string."
+            "Couldn't create room because because UserID is not a string."
         );
         return;
     }
 
-    let roomID = getRandomGroupID();
+    if (!req.body.accessKey) {
+        res.status(400).send(
+            "Couldn't create room because request is a access key."
+        );
+        return;
+    }
+
+    if (typeof req.body.accessKey != "string") {
+        res.status(400).send(
+            "Couldn't create room because because accessKey is not a string."
+        );
+        return;
+    }
+
+    if(!(await isAccessKeyValid(req.body.accessKey))){
+        res.status(400).send(
+            "Couldn't create room because because accessKey is not valid."
+        );
+        return;
+    }
+    
+    if(isAccessKeyAlreadyInUse(req.body.accessKey)){
+        res.status(400).send(
+            "Couldn't create room because because your accessKey is already in use."
+        );
+        return;
+    }
+
+    let roomID = createRandomRoomID();
 
     active_rooms.push({
         roomID: roomID,
@@ -260,6 +296,8 @@ app.post("/api/rooms/create", async (req, res) => {
             currentRevealer: "undefined",
         },
     });
+
+    console.log("ROOM CREATED ------------------------------")
 
     if (true) {
         console.log("sending this");
@@ -281,11 +319,12 @@ console.log("SERVER -- SERVER -- SERVER -- SERVER -- SERVER -- SERVER --");
 
 let active_rooms: ActiveRoom[] = [];
 
+// TODO : Implement isUserValid
 function isUserValid(): boolean {
     return true;
 }
 
-function canUserJoinGroup(
+function canUserJoinRoom(
     socket: SocketIo.Socket<
         ClientToServerEvents,
         ServerToClientEvents,
@@ -297,7 +336,7 @@ function canUserJoinGroup(
 
     if (room) {
         if (room.users.length > room.settings.maxPlayer) {
-            logger.error("Can't join the group because room is full");
+            logger.error("Can't join the room because it is full");
             return false;
         }
     }
@@ -305,21 +344,37 @@ function canUserJoinGroup(
     return true;
 }
 
+function isAccessKeyAlreadyInUse(accessKey : string) : boolean{
+    let accessKeyInUse = active_rooms
+    .map((room) =>
+        room.users.map(
+            (user) =>
+                user.socket.data.accessKey ==
+                accessKey
+        )
+    )
+    .flat()
+    .includes(true);
+
+    return accessKeyInUse
+}
+
 // Middleware, for initial socket connection
 // TODO : check all user data from handshake here before user actually connects, because socket.data will be set there
 io.use(async (socket, next) => {
-    if (typeof socket.handshake.query.groupID != "string") {
-        next(new Error("Can't join, groupID is in wrong format."));
+    // Check roomID
+    if (typeof socket.handshake.query.roomID != "string") {
+        next(new Error("Can't join, roomID is in wrong format."));
         return;
     }
 
-    if (getRoom(socket.handshake.query.groupID) == undefined) {
+    if (getRoom(socket.handshake.query.roomID) == undefined) {
         next(new Error("Can't join room because it doesn't exist."));
         return;
     }
 
-    // TODO : User can only have one room
-    // returns used to satisfy TS
+    // Check access key
+
     if (typeof socket.handshake.query.accessKey != "string") {
         next(new Error("Can't join, accessKey is incorrect."));
         return;
@@ -330,32 +385,19 @@ io.use(async (socket, next) => {
         next(new Error("Can't join, accessKey is not valid."));
         return;
     }
-    // WARN : IMPLEMENT THIS
-    // TODO : check if in any of the active rooms there is a user using the same access key
-    let accessKeyInUse = active_rooms
-        .map((room) =>
-            room.users.map(
-                (user) =>
-                    user.socket.data.accessKey ==
-                    socket.handshake.query.accessKey
-            )
-        )
-        .flat()
-        .includes(true);
-
-    if (accessKeyInUse) {
-        next(new Error("Can't join, accessKey is already in use."));
+    
+    // Access key can't be used twice
+    // TODO : what if access key gets stuck in a room for some reason, probably won't but possible in some way
+    if (isAccessKeyAlreadyInUse(socket.handshake.query.accessKey)) {
+        next(new Error("Can't join, your accessKey is already in use."));
         return;
     }
+
+    // Check userID
 
     // TODO : these already check for undefined, shouldn't need the code above
     if (typeof socket.handshake.query.userID != "string") {
         next(new Error("Can't join, userID is in wrong format."));
-        return;
-    }
-
-    if (typeof socket.handshake.query.userAvatarSeed != "string") {
-        next(new Error("Can't join, userAvatarSeed is in wrong format."));
         return;
     }
 
@@ -364,10 +406,16 @@ io.use(async (socket, next) => {
         next(new Error("Can't join because userID contains illegal character"));
     }
 
-    // TODO : maybe check for avatar seed too
+    // Check avatar seed
+
+    if (typeof socket.handshake.query.userAvatarSeed != "string") {
+        next(new Error("Can't join, userAvatarSeed is in wrong format."));
+        return;
+    }
+
     // Set user data
     socket.data.userID = socket.handshake.query.userID;
-    socket.data.roomID = socket.handshake.query.groupID;
+    socket.data.roomID = socket.handshake.query.roomID;
     socket.data.userAvatarSeed = socket.handshake.query.userAvatarSeed;
     socket.data.accessKey = socket.handshake.query.accessKey;
 
@@ -375,7 +423,7 @@ io.use(async (socket, next) => {
         next(new Error("Can't join room, authentication error."));
     }
 
-    if (!canUserJoinGroup(socket)) {
+    if (!canUserJoinRoom(socket)) {
         next(new Error("Can't join room."));
     }
 
@@ -394,13 +442,14 @@ function createInitialUserGameState(): GameStateUser {
     };
 }
 
-async function addUserToGroup(socket: GameSocket) {
+async function addUserToRoom(socket: GameSocket) {
     let creditAmountForAccessKey = await getCreditAmountForAccessKey(
         socket.data.accessKey
     );
+
     if (creditAmountForAccessKey == null) {
         logger.error(
-            "Can't add user to group, because access key data doesn't exist."
+            "Can't add user to room, because access key data doesn't exist."
         );
         return;
     }
@@ -470,6 +519,7 @@ const createUserList = (room: ActiveRoom) => {
         userID: x.userID,
         userAvatarSeed: x.userAvatarSeed,
         username: x.userID.split("@")[0],
+        credits:x.initialCredits
     }));
 };
 const updateUsersAboutRoomState = (roomID: string) => {
@@ -487,6 +537,17 @@ const updateUsersAboutRoomState = (roomID: string) => {
     });
 };
 
+const getCostForModel = (model:string) => {
+    switch (model) {
+        case "dall-e-3":
+          return 2.5;
+        case "dall-e-2":
+          return 1;
+        default:
+          return 1;
+      }
+}
+
 const SERVER_MAX_PLAYERS_CHARADES = 2;
 
 io.on("connect", async (socket) => {
@@ -495,7 +556,7 @@ io.on("connect", async (socket) => {
     const room = getRoom(socket.data.roomID);
     if (!room) return;
 
-    await addUserToGroup(socket);
+    await addUserToRoom(socket);
     updateUsersAboutRoomState(socket.data.roomID);
 
     socket.on("lobby:select_topic", (topic: string) => {
@@ -540,6 +601,7 @@ io.on("connect", async (socket) => {
     });
 
     socket.on("lobby:setting:change_result_control", (setting: string) => {
+        // TODO : why? just define a type
         if (setting != "HOST" && setting != "AUTHOR") {
             return;
         }
@@ -588,6 +650,25 @@ io.on("connect", async (socket) => {
         updateUsersAboutRoomState(socket.data.roomID);
     });
 
+    socket.on("lobby:setting:change_ai_model", (model: AIModel) => {
+        let room = getRoom(socket.data.roomID);
+
+        if (!room) {
+            // emitRoomErrorToUser(
+            //     socket,
+            //     "Can't remove a topic, room doesn't exist.",
+            //     "ERROR"
+            // );
+            return;
+        }
+
+        if (room.settings.aiModel == model) return;
+
+        room.settings.aiModel = model;
+
+        updateUsersAboutRoomState(socket.data.roomID);
+    });
+
     socket.on("lobby:start_game", (_, callback) => {
         let room = getRoom(socket.data.roomID);
 
@@ -602,17 +683,14 @@ io.on("connect", async (socket) => {
             return;
         }
 
-        // TODO : fix it back
+        // TODO : for testing
+        // room.settings.roundCount = 1
+
         if (
-            // room.users.length < room.settings.maxPlayer &&
+            room.users.length < room.settings.maxPlayer &&
             room.users.length <
             SERVER_MAX_PLAYERS_CHARADES - 1
         ) {
-            // emitRoomErrorToUser(
-            //     socket,
-            //     "Can't start game, not enough players.",
-            //     "WARNING"
-            // );
             callback({
                 success: false,
                 reason: "Not enough players to start.",
@@ -622,11 +700,6 @@ io.on("connect", async (socket) => {
         }
 
         if (room.lobbyState.selectedTopics.length == 0) {
-            // emitRoomErrorToUser(
-            //     socket,
-            //     "Can't start game, pick some topics.",
-            //     "WARNING"
-            // );
             callback({ success: false, reason: "Not enough topics to start." });
 
             return;
@@ -636,11 +709,6 @@ io.on("connect", async (socket) => {
 
         // If there is not enough topics, in the topic groups that were selected, for users in the game then don't start
         if (room.settings.roundCount * room.users.length > topicList.length) {
-            // emitRoomErrorToUser(
-            //     socket,
-            //     "Can't start game, pick more topics.",
-            //     "WARNING"
-            // );
             callback({
                 success: false,
                 reason: "Not enough topics to start, select a few more.",
@@ -653,19 +721,12 @@ io.on("connect", async (socket) => {
         // Check if all users have enough credits for the amount of rounds of topics chosen
         let enoughCredits = !room.users
             .map(
-                (groupUser) =>
-                    groupUser.initialCredits > room!.settings.roundCount
+                (roomUser) =>
+                    roomUser.initialCredits > room!.settings.roundCount * room!.lobbyState.selectedTopics.length
             )
             .includes(false);
 
         if (!enoughCredits) {
-            // room.users.forEach((groupUser) => {
-            //     emitRoomErrorToUser(
-            //         groupUser.socket,
-            //         "Can't start not enough credits",
-            //         "WARNING"
-            //     );
-            // });
             callback({
                 success: false,
                 reason: "Not enough credits to start, pick less rounds or less topics.",
@@ -755,7 +816,7 @@ io.on("connect", async (socket) => {
 
         // TODO : not sure if DALLE fails requests, will have to check
         // TODO : I could ensure that the access key has enough credits before calling image generation
-        imageGenerationSimulated(prompt, 1, "256x256").then((res) => {
+        imageGeneration(room.settings.aiModel, prompt).then(async (res) => {
             // TODO : should do checks on the data
 
             if (room == undefined) {
@@ -770,11 +831,29 @@ io.on("connect", async (socket) => {
                 return;
             }
 
-            // TODO : UNCOMMENT
-            // decrementAccessKey(socket.data.accessKey);
+            // If failed to decrement the access key then terminate the game so our key doesn't get abused
+            if(!(await attemptDecrementAccessKey(socket.data.accessKey, getCostForModel(room.settings.aiModel), MAX_DECREMENT_ACCESS_KEY_ATTEMPTS))){
+                room.state = "ERROR";
+                // TODO : maybe add error message to error
+                updateUsersAboutRoomState(room.roomID)
+                return;
+            };
+            
+
+            if(!res){
+                return;
+            }
+
+            if(res.data.length == 0){
+                return;
+            }
+
+            if(res.data[0].url == undefined){
+                return;
+            }
 
             // Save imageURI for that prompt
-            user.gameState.imageURIsFromPrompts.push(res);
+            user.gameState.imageURIsFromPrompts.push(res.data[0].url);
 
             // Check if prompting stage is finished
             // Do this by checking if all users have the same amount of imageURIs as topics
@@ -790,10 +869,10 @@ io.on("connect", async (socket) => {
             }
 
             let everyoneFinished = true;
-            room!.users.forEach((groupUser) => {
+            room!.users.forEach((roomUser) => {
                 if (
-                    groupUser.gameState.imageURIsFromPrompts.length !=
-                    groupUser.gameState.topics.length
+                    roomUser.gameState.imageURIsFromPrompts.length !=
+                    roomUser.gameState.topics.length
                 ) {
                     everyoneFinished = false;
                 }
@@ -862,10 +941,10 @@ io.on("connect", async (socket) => {
         // Check if all users are finished
         // Check all users, if they have not went through their entire topics array then not everyone finished yet
         let everyoneFinished = true;
-        room.users.forEach((groupUser) => {
+        room.users.forEach((roomUser) => {
             if (
-                groupUser.gameState.guessPlace <
-                groupUser.gameState.imagesToGuess.length
+                roomUser.gameState.guessPlace <
+                roomUser.gameState.imagesToGuess.length
             ) {
                 everyoneFinished = false;
             }
@@ -926,9 +1005,9 @@ io.on("connect", async (socket) => {
 
     socket.on("disconnect", () => {
         // logger.info(`Socket : ${socket.id} has disconnected.`);
-        let group = getRoom(socket.data.roomID);
+        let room = getRoom(socket.data.roomID);
 
-        if (group == undefined) {
+        if (room == undefined) {
             // logger.error(
             //     "The group the disconnected socket was in no longer exists."
             // );
@@ -938,14 +1017,14 @@ io.on("connect", async (socket) => {
         // Remove user from room, and remove room if empty
 
         // remove user from room
-        group.users = group.users.filter(
+        room.users = room.users.filter(
             (item) => item.userID != socket.data.userID
         );
 
         // Remove the room if no users
         if (room.users.length == 0) {
             active_rooms.filter(
-                (activeRoom) => activeRoom.roomID != room.roomID
+                (activeRoom) => activeRoom.roomID != room!.roomID
             );
             return;
         }
@@ -980,16 +1059,16 @@ type Result = {
 };
 
 // TODO : will not work fore more than one user, whole system would need to be redesigned for that
-function getResultsOfGame(group: ActiveRoom): Result[] {
+function getResultsOfGame(room: ActiveRoom): Result[] {
     let results = [];
 
-    if (group.users.length < 2) {
+    if (room.users.length < 2) {
         logger.error("Can't get results of the game, players missing.");
         return [];
     }
 
-    let user = group.users[0];
-    let otherUser = group.users[1];
+    let user = room.users[0];
+    let otherUser = room.users[1];
 
     for (let i = 0; i < user.gameState.topics.length; i++) {
         results.push({
