@@ -29,10 +29,6 @@ const SERVER_MAX_GUESS_CHARACTER_LIMIT = 300;
 
 const MAX_DECREMENT_ACCESS_KEY_ATTEMPTS = 2
 
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
-
 const app = express();
 
 // for POST
@@ -217,10 +213,12 @@ function getAvailableTopics(): TopicGroup[] {
     availableTopics.topicNames.forEach((topic) => {
         if (
             topic == "anime" ||
-            topic == "movies" ||
+            topic == "films" ||
             topic == "cartoons" ||
-            topic == "shows" ||
-            topic == "super heroes"
+            topic == "series" ||
+            topic == "super heroes" ||
+            topic == "games" ||
+            topic == "pokemon"
         ) {
             topics.push({
                 topic: topic,
@@ -625,14 +623,15 @@ io.on("connect", async (socket) => {
     });
 
     socket.on("lobby:setting:change_round_count", (roundCount: number) => {
-        if (!(roundCount % 2 == 0) || roundCount > 12) {
-            // emitRoomErrorToUser(
-            //     socket,
-            //     "Can't change round count to provided value.",
-            //     "WARNING"
-            // );
-            return;
-        }
+        // TODO : Uncomment this, only commented out for testing to allow a custom amount of rounds
+        // if (!(roundCount % 2 == 0) || roundCount > 12) {
+        //     // emitRoomErrorToUser(
+        //     //     socket,
+        //     //     "Can't change round count to provided value.",
+        //     //     "WARNING"
+        //     // );
+        //     return;
+        // }
 
         let room = getRoom(socket.data.roomID);
 
