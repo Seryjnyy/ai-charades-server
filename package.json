@@ -1,18 +1,17 @@
 {
-  "name": "sockets-test-newest",
+  "name": "ai-charades-server",
   "version": "1.0.0",
-  "description": "server ",
+  "description": "Server for the ai-charades game.",
   "main": "index.js",
   "scripts": {
     "dev": "nodemon src/index.ts",
     "start": "node src/index.ts"
   },
-  "author": "",
+  "author": "Jakub Wojcik",
   "license": "ISC",
   "dependencies": {
     "@aws-sdk/client-dynamodb": "^3.441.0",
     "@aws-sdk/util-dynamodb": "^3.441.0",
-    "@prisma/client": "^5.5.2",
     "@types/socket.io": "^3.0.2",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
@@ -27,7 +26,6 @@
     "@types/express": "^4.17.20",
     "@types/node": "^20.8.7",
     "@types/pg": "^8.10.7",
-    "prisma": "^5.5.2",
     "ts-node": "^10.9.1",
     "typescript": "^5.2.2"
   }
