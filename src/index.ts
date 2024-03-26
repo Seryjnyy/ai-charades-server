@@ -1,16 +1,12 @@
 import "dotenv/config";
 import express from "express";
 import { createServer } from "https";
-import { OpenAI } from "openai";
 import SocketIo, { Server } from "socket.io";
-import { roomRouter } from "./routes/room";
 var bodyParser = require("body-parser");
 var cors = require("cors");
 import { logger } from "./logger";
 import {
     imageGeneration,
-    imageGenerationSimulated,
-    promptModeration,
 } from "./services/imageGenerationService";
 import { getCombinedTopicList } from "./services/topicService";
 import { readFileSync } from "fs";
@@ -22,7 +18,7 @@ import {
     isAccessKeyValid,
 } from "./services/accessKeyService";
 import * as availableTopics from "./topics.json";
-import { ImagesResponse } from "openai/resources";
+
 
 const SERVER_MAX_PROMPT_CHARACTER_LIMIT = 300;
 const SERVER_MAX_GUESS_CHARACTER_LIMIT = 300;
@@ -109,7 +105,7 @@ const io = new Server<
     SocketData
 >(httpsServer, { cors: { origin: "*" } });
 // if problem with websocket cors : https://www.youtube.com/watch?v=1BfCnjr_Vjg&t=392s
-const PORT = process.env.PORT || 3000;
+const PORT = 443;
 
 app.use(cors());
 
