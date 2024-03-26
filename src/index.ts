@@ -952,13 +952,13 @@ io.on("connect", async (socket) => {
             room.resultState.results = getResultsOfGame(room);
             room.resultState.resultPlace = 0;
 
+            // console.log(room.settings.nextResultPermission)
             if (room.settings.nextResultPermission == "AUTHOR") {
                 room.resultState.currentRevealer =
                     room.resultState.results[0].prompter.userID;
             } else {
                 room.resultState.currentRevealer = room.creator;
             }
-
             updateUsersAboutRoomState(room.roomID);
         } else {
             updateUserAboutRoomState(user, room, createUserList(room));
@@ -990,10 +990,14 @@ io.on("connect", async (socket) => {
         }
 
         room.resultState.resultPlace += 1;
-        room.resultState.currentRevealer =
-            room.resultState.results[
+
+        if (room.settings.nextResultPermission == "AUTHOR") {
+            room.resultState.currentRevealer = room.resultState.results[
                 room.resultState.resultPlace
             ].prompter.userID;
+        } else if(room.settings.nextResultPermission == "HOST") {
+            room.resultState.currentRevealer = room.creator;
+        }
 
         updateUsersAboutRoomState(room.roomID);
     });
