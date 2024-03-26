@@ -6,7 +6,7 @@ var bodyParser = require("body-parser");
 var cors = require("cors");
 import { logger } from "./logger";
 import {
-    imageGeneration,
+    imageGeneration, promptModeration,
 } from "./services/imageGenerationService";
 import { getCombinedTopicList } from "./services/topicService";
 import { readFileSync } from "fs";
@@ -680,11 +680,11 @@ io.on("connect", async (socket) => {
 
         // TODO : for testing
         // room.settings.roundCount = 1
-
+        // TODO : Edit here to allow one player for testing
         if (
             room.users.length < room.settings.maxPlayer &&
             room.users.length <
-            SERVER_MAX_PLAYERS_CHARADES - 1
+            SERVER_MAX_PLAYERS_CHARADES
         ) {
             callback({
                 success: false,
@@ -784,23 +784,23 @@ io.on("connect", async (socket) => {
         }
 
         // TODO : using any here
-        // const moderationResult: any = await promptModeration(prompt);
-        // if (moderationResult == undefined) {
-        //     callback({success:false, reason:"Something went wrong, please try again."})
-        //     return;
-        // }
+        const moderationResult: any = await promptModeration(prompt);
+        if (moderationResult == undefined) {
+            callback({success:false, reason:"Something went wrong, please try again."})
+            return;
+        }
 
-        // if (moderationResult.results[0].flagged) {
+        if (moderationResult.results[0].flagged) {
 
-        //     // TODO : the reason should only contain the values flagged
-        //     // No success if the prompt has been flagged
-        //     callback({
-        //         success: !moderationResult.results.flagged,
-        //         // reason: moderationResult.results.categories,
-        //         reason: "Your prompt contains inappropriate content."
-        //     });
-        //     return;
-        // }
+            // TODO : the reason should only contain the values flagged
+            // No success if the prompt has been flagged
+            callback({
+                success: !moderationResult.results.flagged,
+                // reason: moderationResult.results.categories,
+                reason: "Your prompt contains inappropriate content."
+            });
+            return;
+        }
 
         // Save Prompt
 

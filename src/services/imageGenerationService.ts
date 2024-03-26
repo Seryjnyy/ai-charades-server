@@ -39,7 +39,7 @@ async function imageGeneration(
     }
 
     
-    return imageGenerationSimulated()
+    // return imageGenerationSimulated()
     console.log("Calling AI for: ", prompt)
     const response = await openai.images
         .generate({
