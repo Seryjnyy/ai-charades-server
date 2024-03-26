@@ -9,10 +9,10 @@ function getCombinedTopicList(topicGroups: string[]): string[] {
             case "cartoons":
                 topicGroupData.push(availableTopics.cartoons);
                 break;
-            case "shows":
+            case "series":
                 topicGroupData.push(availableTopics.series);
                 break;
-            case "movies":
+            case "films":
                 topicGroupData.push(availableTopics.films);
                 break;
             case "super heroes":
@@ -24,7 +24,7 @@ function getCombinedTopicList(topicGroups: string[]): string[] {
             case "pokemon":
                 topicGroupData.push(availableTopics.pokemon);
             case "games":
-                topicGroupData.push(availableTopics.pokemon);
+                topicGroupData.push(availableTopics.games);
         }
     });
 
