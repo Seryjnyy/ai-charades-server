@@ -8,7 +8,7 @@ import {
 import { unmarshall } from "@aws-sdk/util-dynamodb";
 import "dotenv/config";
 
-const AWS_ACCESS_KEY = process.env.AWS_ACCESS_KEY_ID
+const AWS_ACCESS_KEY = process.env.AWS_ACCESS_KEY_ID 
     ? process.env.AWS_ACCESS_KEY_ID
     : "";
 const AWS_SECRET_KEY = process.env.AWS_SECRET_ACCESS_KEY
@@ -146,7 +146,6 @@ async function decrementAccessKey(accessKey: string, amount:number) {
         return false
     }
 
-    return false
 }
 
 async function getAccessKeyData(accessKey: string) {
